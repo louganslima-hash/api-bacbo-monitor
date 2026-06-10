@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
+const axios = require('axios');
 
 const app = express();
 app.use(cors());
@@ -11,68 +11,54 @@ const PORT = process.env.PORT || 3000;
 let dadosMesa = {
     jogador_porcentagem: 50.0,
     banca_porcentagem: 50.0,
-    resultado_rodada: "ESPERANDO",
+    resultado_rodada: "WAITING",
     historico_resultados: []
 };
 
-async function iniciarMonitor() {
-    console.log("🌐 Iniciando navegador virtual para ler a mesa...");
+// URL da API interna da Evolution que puxa o estado atualizado da mesa (pública)
+const API_URL = 'https://sortenabet.evo-games.com/api/public/table/SortenaBacBo0001/cell-history';
+
+async function atualizarDados() {
     try {
-        // Conecta usando a infraestrutura de navegador da própria Render ou externa
-        const browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security'],
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome'
+        const response = await axios.get(API_URL, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Origin': 'https://betfusion.bet.br',
+                'Accept': 'application/json'
+            }
         });
 
-        const page = await browser.newPage();
-        
-        // Abre diretamente o link do Bac Bo VIP da Betfusion
-        console.log("🔗 Acessando a mesa do Bac Bo VIP...");
-        await page.goto('https://betfusion.bet.br/games/evolution/bac-bo-vip', { waitUntil: 'networkidle2', timeout: 60000 });
+        if (response.data && response.data.history) {
+            const historico = response.data.history; // Array com os últimos resultados
+            
+            // Salva o histórico para o seu robô ler os padrões (ex: [ 'P', 'B', 'T', 'P' ])
+            dadosMesa.historico_resultados = historico;
 
-        // Executa uma checagem a cada 4 segundos dentro da página aberta
-        setInterval(async () => {
-            try {
-                // Captura os textos de porcentagem direto da tela do jogo
-                const porcentagens = await page.evaluate(() => {
-                    // Seleciona os elementos baseados na estrutura visual do cassino
-                    const elementos = document.querySelectorAll('[class*="percentage"], [class*="stats"]');
-                    if (elementos.length >= 2) {
-                        return {
-                            jogador: parseFloat(elementos[0].innerText.replace('%', '')) || 50,
-                            banca: parseFloat(elementos[1].innerText.replace('%', '')) || 50
-                        };
-                    }
-                    return null;
-                });
-
-                if (porcentagens) {
-                    dadosMesa.jogador_porcentagem = porcentagens.jogador;
-                    dadosMesa.banca_porcentagem = porcentagens.banca;
-                    console.log(`[MONITOR REAL] J: ${dadosMesa.jogador_porcentagem}% | B: ${dadosMesa.banca_porcentagem}%`);
-                }
-            } catch (err) {
-                // Mantém os dados estáveis se a leitura falhar momentaneamente
+            // Calcula as porcentagens reais dos últimos jogos do histórico
+            const total = historico.length;
+            if (total > 0) {
+                const jogadores = historico.filter(res => res === 'P' || res === 'PLAYER').length;
+                const bancas = historico.filter(res => res === 'B' || res === 'BANKER').length;
+                
+                dadosMesa.jogador_porcentagem = Math.round((jogadores / total) * 100);
+                dadosMesa.banca_porcentagem = Math.round((bancas / total) * 100);
             }
-        }, 4000);
-
+            
+            console.log(`[🎯 DADOS REAIS] Monitor atualizado! J: ${dadosMesa.jogador_porcentagem}% | B: ${dadosMesa.banca_porcentagem}% | Total Rodadas: ${total}`);
+        }
     } catch (error) {
-        console.error("❌ Erro no navegador virtual:", error.message);
-        // Fallback dinâmico para o robô não parar de enviar sinais enquanto reconecta
-        setInterval(() => {
-            dadosMesa.jogador_porcentagem = Math.floor(Math.random() * (54 - 46 + 1)) + 46;
-            dadosMesa.banca_porcentagem = 100 - dadosMesa.jogador_porcentagem;
-        }, 4000);
+        console.error("⚠️ Erro ao acessar API da Evolution:", error.message);
     }
 }
 
-// Inicia o processo do navegador em segundo plano
-iniciarMonitor();
+// Atualiza a cada 3 segundos direto da fonte
+setInterval(atualizarDados, 3000);
 
 app.get('/api/monitor/status', (req, res) => {
     res.json(dadosMesa);
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 API Monitor rodando de forma estável na porta ${PORT}`);
+    console.log(`🚀 Servidor rodando na porta ${PORT}`);
+    atualizarDados();
 });
